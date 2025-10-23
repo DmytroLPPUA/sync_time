@@ -9,10 +9,19 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Optional, Tuple
+
+
+SYNC_TOLERANCE = _dt.timedelta(minutes=5)
+WMI_VERIFICATION_DELAY_SECONDS = 5
+
+
+class RemoteProcessTimeoutError(RuntimeError):
+    """Raised when the remote WMI process fails to finish in time."""
 
 
 class TimeSyncApp:
@@ -271,6 +280,8 @@ class TimeSyncApp:
         completed = self._run_local_powershell(command)
         if completed.returncode != 0:
             stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
+            if "Timed out waiting for remote process completion" in stderr:
+                raise RemoteProcessTimeoutError(stderr)
             raise RuntimeError(stderr)
 
     def _get_remote_time_via_wmi(
@@ -337,9 +348,22 @@ class TimeSyncApp:
             f"$target = Get-Date '{iso_time}'; "
             "Set-Date -Date $target | Out-Null"
         )
-        self._invoke_wmi_process(host, username, password, script)
+        timeout_exc: Optional[RemoteProcessTimeoutError] = None
+        try:
+            self._invoke_wmi_process(host, username, password, script)
+        except RemoteProcessTimeoutError as exc:
+            timeout_exc = exc
+            self.log_message(f"WARNING: {exc}")
+        wait_seconds = WMI_VERIFICATION_DELAY_SECONDS
+        self.log_message(
+            f"Waiting {wait_seconds} seconds before verifying the remote clock state..."
+        )
+        time.sleep(wait_seconds)
         # Confirm the updated time via WMI
-        return self._get_remote_time_via_wmi(host, username, password)
+        remote_dt, parsed = self._get_remote_time_via_wmi(host, username, password)
+        if remote_dt is None and timeout_exc is not None:
+            raise timeout_exc
+        return remote_dt, parsed
 
     @staticmethod
     def _parse_remote_time(output: str) -> Tuple[Optional[_dt.datetime], Optional[str]]:
@@ -441,6 +465,15 @@ class TimeSyncApp:
             f"Difference after sync:  {diff_message}",
         ]
         self.log_message("\n".join(log))
+
+        if abs(delta.total_seconds()) > SYNC_TOLERANCE.total_seconds():
+            tolerance_message = self._format_timedelta(SYNC_TOLERANCE)
+            self._show_error(
+                "Remote clock difference after sync exceeds the allowable "
+                f"tolerance of {tolerance_message} (observed {diff_message})."
+            )
+            return
+
         self._show_info("Remote clock synchronized successfully.")
 
     # ------------------------------------------------------------------
