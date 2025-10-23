@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import hashlib
+import hmac
 import os
 import re
 import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Callable, List, Optional, Tuple, TypeVar
 
@@ -18,7 +20,61 @@ from typing import Callable, List, Optional, Tuple, TypeVar
 SYNC_TOLERANCE = _dt.timedelta(minutes=5)
 WMI_VERIFICATION_DELAY_SECONDS = 5
 DEFAULT_USERNAME = "Administrator"
-PASSWORD_FILE_NAME = "pass.txt"
+PASSWORD_FILE_NAME = "pass.enc"
+PASSWORD_VAULT_VERSION = b"STV1"
+PASSWORD_STREAM_KEY = hashlib.sha256(b"sync_time_gui_stream_secret_v1").digest()
+PASSWORD_MAC_KEY = hashlib.sha256(b"sync_time_gui_mac_secret_v1").digest()
+
+
+def _derive_keystream(iv: bytes, length: int) -> bytes:
+    keystream = bytearray()
+    counter = 0
+    while len(keystream) < length:
+        counter_bytes = counter.to_bytes(4, "big")
+        digest = hashlib.sha256(PASSWORD_STREAM_KEY + iv + counter_bytes).digest()
+        keystream.extend(digest)
+        counter += 1
+    return bytes(keystream[:length])
+
+
+def _encrypt_passwords(passwords: List[str]) -> bytes:
+    joined = "\n".join(passwords)
+    data = joined.encode("utf-8")
+    iv = os.urandom(16)
+    keystream = _derive_keystream(iv, len(data))
+    ciphertext = bytes(b ^ k for b, k in zip(data, keystream))
+    payload = iv + ciphertext
+    tag = hmac.new(PASSWORD_MAC_KEY, payload, hashlib.sha256).digest()
+    blob = PASSWORD_VAULT_VERSION + payload + tag
+    return base64.b64encode(blob)
+
+
+def _decrypt_passwords(raw: bytes) -> List[str]:
+    try:
+        decoded = base64.b64decode(raw)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError("Файл паролів має некоректний формат (не вдалося декодувати base64).") from exc
+
+    header_len = len(PASSWORD_VAULT_VERSION)
+    if len(decoded) < header_len + 16 + hashlib.sha256().digest_size:
+        raise ValueError("Файл паролів має некоректний розмір.")
+    if decoded[:header_len] != PASSWORD_VAULT_VERSION:
+        raise ValueError("Непідтримуваний формат файлу паролів.")
+
+    body = decoded[header_len:]
+    mac_size = hashlib.sha256().digest_size
+    payload, mac = body[:-mac_size], body[-mac_size:]
+    expected_mac = hmac.new(PASSWORD_MAC_KEY, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected_mac):
+        raise ValueError("Пошкоджений файл паролів (контрольна сума не збігається).")
+    if len(payload) < 16:
+        raise ValueError("Файл паролів пошкоджено (відсутній вектор ініціалізації).")
+
+    iv, ciphertext = payload[:16], payload[16:]
+    keystream = _derive_keystream(iv, len(ciphertext))
+    data = bytes(b ^ k for b, k in zip(ciphertext, keystream))
+    text = data.decode("utf-8") if data else ""
+    return [line.strip() for line in text.splitlines() if line.strip()]
 ResultT = TypeVar("ResultT")
 
 
@@ -35,6 +91,7 @@ class TimeSyncApp:
         self.root.resizable(False, False)
 
         self.host_var = tk.StringVar()
+        self._password_window: Optional[tk.Toplevel] = None
 
         self._build_ui()
 
@@ -52,7 +109,8 @@ class TimeSyncApp:
             main_frame,
             text=(
                 "Аутентифікація виконується обліковим записом Administrator. "
-                "Паролі зчитуються з pass.txt (кожний у новому рядку)."
+                "Паролями можна керувати через кнопку \"Керування паролями\". "
+                "Вони зберігаються у файлі pass.enc поруч із програмою в зашифрованому вигляді."
             ),
             wraplength=460,
             justify="left",
@@ -60,13 +118,16 @@ class TimeSyncApp:
 
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 0))
-        button_frame.columnconfigure((0, 1), weight=1)
+        button_frame.columnconfigure((0, 1, 2), weight=1)
 
         self.check_button = ttk.Button(button_frame, text="Перевірити віддалений час", command=self.check_remote_time)
         self.check_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
         self.sync_button = ttk.Button(button_frame, text="Синхронізувати", command=self.sync_remote_time)
-        self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        self.sync_button.grid(row=0, column=1, sticky="ew", padx=5)
+
+        password_button = ttk.Button(button_frame, text="Керування паролями", command=self.open_password_manager)
+        password_button.grid(row=0, column=2, sticky="ew", padx=(5, 0))
 
         self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
         self.output.grid(row=3, column=0, columnspan=2, padx=10, pady=(10, 10))
@@ -101,6 +162,125 @@ class TimeSyncApp:
     def _show_info(self, message: str) -> None:
         self.log_message(message)
 
+    def open_password_manager(self) -> None:
+        if self._password_window is not None and self._password_window.winfo_exists():
+            self._password_window.deiconify()
+            self._password_window.lift()
+            self._password_window.focus_force()
+            return
+
+        try:
+            passwords = self._load_passwords(allow_missing=True)
+        except ValueError as exc:
+            messagebox.showerror("Помилка", str(exc))
+            passwords = []
+
+        window = tk.Toplevel(self.root)
+        window.title("Керування паролями")
+        window.resizable(False, False)
+        window.transient(self.root)
+        self._password_window = window
+
+        def on_close() -> None:
+            self._password_window = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+
+        def handle_destroy(event: tk.Event) -> None:
+            if event.widget is window:
+                self._password_window = None
+
+        window.bind("<Destroy>", handle_destroy)
+
+        frame = ttk.Frame(window, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        ttk.Label(frame, text="Збережені паролі:").grid(row=0, column=0, columnspan=2, sticky="w")
+
+        list_frame = ttk.Frame(frame)
+        list_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(5, 5))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        password_list: List[str] = list(passwords)
+        list_var = tk.StringVar(value=password_list)
+        listbox = tk.Listbox(list_frame, listvariable=list_var, height=8, width=40, exportselection=False)
+        listbox.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(5, 0))
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        entry_var = tk.StringVar()
+        entry = ttk.Entry(frame, textvariable=entry_var, width=35)
+        entry.grid(row=2, column=0, sticky="ew")
+
+        status_var = tk.StringVar()
+        status_label = ttk.Label(frame, textvariable=status_var, foreground="green")
+        status_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+        info_text = (
+            "Паролі зберігаються у файлі pass.enc поруч із програмою. "
+            "Зміни зберігаються автоматично."
+        )
+        ttk.Label(frame, text=info_text, wraplength=360, justify="left").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(5, 0)
+        )
+
+        def set_status(message: str, *, error: bool = False) -> None:
+            status_var.set(message)
+            status_label.configure(foreground="red" if error else "green")
+
+        def refresh_list() -> None:
+            list_var.set(password_list)
+
+        def persist_changes() -> bool:
+            try:
+                self._save_passwords(password_list)
+            except Exception as exc:  # pragma: no cover - UI feedback path
+                messagebox.showerror("Помилка", f"Не вдалося зберегти паролі: {exc}")
+                set_status("Помилка під час збереження паролів.", error=True)
+                return False
+            set_status(f"Збережено {len(password_list)} паролів.")
+            return True
+
+        def add_password() -> None:
+            new_password = entry_var.get().strip()
+            if not new_password:
+                set_status("Введіть пароль для додавання.", error=True)
+                return
+            if new_password in password_list:
+                set_status("Такий пароль вже існує у списку.", error=True)
+                return
+            password_list.append(new_password)
+            refresh_list()
+            entry_var.set("")
+            persist_changes()
+
+        def remove_selected() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                set_status("Оберіть пароль для видалення.", error=True)
+                return
+            for index in reversed(selection):
+                del password_list[index]
+            refresh_list()
+            if persist_changes() and not password_list:
+                set_status("У файлі паролів наразі немає записів.")
+
+        add_button = ttk.Button(frame, text="Додати", command=add_password)
+        add_button.grid(row=2, column=1, sticky="w", padx=(5, 0))
+
+        remove_button = ttk.Button(frame, text="Видалити обраний", command=remove_selected)
+        remove_button.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        set_status(f"Завантажено {len(password_list)} паролів.")
+        entry.focus_set()
+
     def _run_in_thread(self, target) -> None:
         def worker():
             self._set_buttons_state(False)
@@ -125,20 +305,42 @@ class TimeSyncApp:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(script_dir, PASSWORD_FILE_NAME)
 
-    def _load_passwords(self) -> List[str]:
+    def _load_passwords(self, *, allow_missing: bool = False) -> List[str]:
         path = self._password_file_path()
         if not os.path.isfile(path):
+            if allow_missing:
+                return []
             raise FileNotFoundError(
-                "Не знайдено файл паролів pass.txt поруч із програмою."
+                "Не знайдено файл паролів pass.enc поруч із програмою. "
+                "Скористайтесь кнопкою \"Керування паролями\" для додавання паролів."
             )
 
-        with open(path, "r", encoding="utf-8") as handle:
-            passwords = [line.strip() for line in handle if line.strip()]
+        with open(path, "rb") as handle:
+            content = handle.read()
 
-        if not passwords:
-            raise ValueError("Файл pass.txt не містить жодного пароля.")
+        if not content:
+            if allow_missing:
+                return []
+            raise ValueError("Файл pass.enc порожній. Додайте паролі через керування паролями.")
+
+        try:
+            passwords = _decrypt_passwords(content)
+        except ValueError as exc:
+            raise ValueError(f"Не вдалося розшифрувати файл паролів: {exc}") from exc
+
+        if not passwords and not allow_missing:
+            raise ValueError("Файл pass.enc не містить жодного пароля. Додайте їх через керування паролями.")
 
         return passwords
+
+    def _save_passwords(self, passwords: List[str]) -> None:
+        sanitized = [pwd.strip() for pwd in passwords if pwd.strip()]
+        encoded = _encrypt_passwords(sanitized)
+        path = self._password_file_path()
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "wb") as handle:
+            handle.write(encoded)
+        os.replace(tmp_path, path)
 
     @staticmethod
     def _is_authentication_error(message: str) -> bool:
@@ -169,7 +371,7 @@ class TimeSyncApp:
                 raise
         if last_auth_error is not None:
             raise last_auth_error
-        raise RuntimeError("Не знайдено жодного дійсного пароля у pass.txt.")
+        raise RuntimeError("Не знайдено жодного дійсного пароля у файлі pass.enc.")
 
     @staticmethod
     def _ps_single_quote(value: str) -> str:
