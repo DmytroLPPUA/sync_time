@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Optional, Tuple
 
@@ -29,7 +29,7 @@ class TimeSyncApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Remote Time Sync")
+        self.root.title("Синхронізація часу")
         self.root.resizable(False, False)
 
         self.psexec_var = tk.StringVar(value="PsExec.exe")
@@ -47,24 +47,26 @@ class TimeSyncApp:
         main_frame.grid(row=0, column=0, sticky="nsew")
         main_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(main_frame, text="Remote host/IP:").grid(row=0, column=0, sticky="w", **padding)
+        ttk.Label(main_frame, text="Віддалений хост / IP:").grid(row=0, column=0, sticky="w", **padding)
         host_entry = ttk.Entry(main_frame, textvariable=self.host_var, width=45)
         host_entry.grid(row=0, column=1, sticky="ew", **padding)
-        settings_button = ttk.Button(main_frame, text="Settings...", command=self._open_settings_dialog)
+        settings_button = ttk.Button(main_frame, text="Параметри...", command=self._open_settings_dialog)
         settings_button.grid(row=0, column=2, sticky="ew", **padding)
 
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
         button_frame.columnconfigure((0, 1), weight=1)
 
-        self.check_button = ttk.Button(button_frame, text="Check remote time", command=self.check_remote_time)
+        self.check_button = ttk.Button(button_frame, text="Перевірити віддалений час", command=self.check_remote_time)
         self.check_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
 
-        self.sync_button = ttk.Button(button_frame, text="Sync now", command=self.sync_remote_time)
+        self.sync_button = ttk.Button(button_frame, text="Синхронізувати", command=self.sync_remote_time)
         self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
         self.output.grid(row=2, column=0, columnspan=3, padx=10, pady=(10, 10))
+        self.output.tag_configure("error", foreground="red")
+        self.output.tag_configure("warning", foreground="red")
 
         # Accessibility: focus first field
         host_entry.focus_set()
@@ -76,7 +78,7 @@ class TimeSyncApp:
             return
 
         window = tk.Toplevel(self.root)
-        window.title("Connection Settings")
+        window.title("Параметри підключення")
         window.resizable(False, False)
         window.transient(self.root)
         self.settings_window = window
@@ -89,21 +91,21 @@ class TimeSyncApp:
 
         padding = {"padx": 5, "pady": 5}
 
-        ttk.Label(settings_frame, text="PsExec path:").grid(row=0, column=0, sticky="w", **padding)
+        ttk.Label(settings_frame, text="Шлях до PsExec:").grid(row=0, column=0, sticky="w", **padding)
         psexec_entry = ttk.Entry(settings_frame, textvariable=self.psexec_var, width=45)
         psexec_entry.grid(row=0, column=1, sticky="ew", **padding)
-        browse_button = ttk.Button(settings_frame, text="Browse", command=self._browse_psexec)
+        browse_button = ttk.Button(settings_frame, text="Огляд", command=self._browse_psexec)
         browse_button.grid(row=0, column=2, sticky="ew", **padding)
 
-        ttk.Label(settings_frame, text="Username:").grid(row=1, column=0, sticky="w", **padding)
+        ttk.Label(settings_frame, text="Ім'я користувача:").grid(row=1, column=0, sticky="w", **padding)
         username_entry = ttk.Entry(settings_frame, textvariable=self.username_var, width=45)
         username_entry.grid(row=1, column=1, columnspan=2, sticky="ew", **padding)
 
-        ttk.Label(settings_frame, text="Password:").grid(row=2, column=0, sticky="w", **padding)
+        ttk.Label(settings_frame, text="Пароль:").grid(row=2, column=0, sticky="w", **padding)
         password_entry = ttk.Entry(settings_frame, textvariable=self.password_var, width=45, show="*")
         password_entry.grid(row=2, column=1, columnspan=2, sticky="ew", **padding)
 
-        ttk.Label(settings_frame, text="Execution method:").grid(row=3, column=0, sticky="w", **padding)
+        ttk.Label(settings_frame, text="Метод виконання:").grid(row=3, column=0, sticky="w", **padding)
         method_frame = ttk.Frame(settings_frame)
         method_frame.grid(row=3, column=1, columnspan=2, sticky="w", **padding)
         ttk.Radiobutton(
@@ -121,7 +123,7 @@ class TimeSyncApp:
 
         close_frame = ttk.Frame(settings_frame)
         close_frame.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10, 0))
-        close_button = ttk.Button(close_frame, text="Close", command=self._close_settings_dialog)
+        close_button = ttk.Button(close_frame, text="Закрити", command=self._close_settings_dialog)
         close_button.grid(row=0, column=0, sticky="e")
 
         psexec_entry.focus_set()
@@ -137,32 +139,34 @@ class TimeSyncApp:
     # UI helpers
     def _browse_psexec(self) -> None:
         path = filedialog.askopenfilename(
-            title="Select PsExec.exe",
-            filetypes=[("PsExec", "PsExec.exe"), ("Executable", "*.exe"), ("All files", "*.*")],
+            title="Виберіть PsExec.exe",
+            filetypes=[("PsExec", "PsExec.exe"), ("Виконуваний файл", "*.exe"), ("Усі файли", "*.*")],
         )
         if path:
             self.psexec_var.set(path)
 
-    def _append_output(self, message: str) -> None:
+    def _append_output(self, message: str, *, tag: Optional[str] = None) -> None:
         self.output.configure(state="normal")
-        self.output.insert(tk.END, f"{message}\n")
+        text = message if message.endswith("\n") else f"{message}\n"
+        if tag:
+            self.output.insert(tk.END, text, tag)
+        else:
+            self.output.insert(tk.END, text)
         self.output.see(tk.END)
         self.output.configure(state="disabled")
 
-    def log_message(self, message: str) -> None:
-        self.root.after(0, lambda: self._append_output(message))
+    def log_message(self, message: str, *, tag: Optional[str] = None) -> None:
+        self.root.after(0, lambda msg=message, tg=tag: self._append_output(msg, tag=tg))
 
     def _set_buttons_state(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         self.root.after(0, lambda: (self.check_button.config(state=state), self.sync_button.config(state=state)))
 
     def _show_error(self, message: str) -> None:
-        self.log_message(f"ERROR: {message}")
-        self.root.after(0, lambda: messagebox.showerror("Remote Time Sync", message))
+        self.log_message(f"ПОМИЛКА: {message}", tag="error")
 
     def _show_info(self, message: str) -> None:
         self.log_message(message)
-        self.root.after(0, lambda: messagebox.showinfo("Remote Time Sync", message))
 
     def _run_in_thread(self, target) -> None:
         def worker():
@@ -189,7 +193,7 @@ class TimeSyncApp:
             return resolved
 
         raise FileNotFoundError(
-            "Could not locate PsExec executable. Specify the full path or ensure it is available in PATH."
+            "Не вдалося знайти виконуваний файл PsExec. Вкажіть повний шлях або переконайтеся, що він доступний у PATH."
         )
 
     def _get_connection_details(self) -> Tuple[str, str, str]:
@@ -198,11 +202,11 @@ class TimeSyncApp:
         password = self.password_var.get()
 
         if not host:
-            raise ValueError("Remote host/IP cannot be empty.")
+            raise ValueError("Поле віддаленого хоста / IP не може бути порожнім.")
         if not username:
-            raise ValueError("Username cannot be empty.")
+            raise ValueError("Ім'я користувача не може бути порожнім.")
         if not password:
-            raise ValueError("Password cannot be empty.")
+            raise ValueError("Пароль не може бути порожнім.")
 
         return host, username, password
 
@@ -223,10 +227,10 @@ class TimeSyncApp:
             command,
         ]
 
-        self.log_message(f"Executing PsExec command against {host} ...")
+        self.log_message(f"Виконання команди PsExec для {host} ...")
         completed = subprocess.run(cmd, capture_output=True, text=True)
         if completed.returncode != 0:
-            stderr = completed.stderr.strip() or "PsExec reported an unknown error."
+            stderr = completed.stderr.strip() or "PsExec повідомив про невідому помилку."
             raise RuntimeError(stderr)
         return completed
 
@@ -246,23 +250,23 @@ class TimeSyncApp:
 
     @staticmethod
     def _enhance_wmi_error(stderr: str) -> str:
-        message = stderr.strip() or "PowerShell reported an unknown error."
+        message = stderr.strip() or "PowerShell повідомив про невідому помилку."
         normalized = message.lower()
         hints = []
 
         access_denied_tokens = ["access is denied", "0x80070005"]
         if any(token in normalized for token in access_denied_tokens):
             hints.append(
-                "WMI reported an access denied error. Ensure the supplied credentials belong to the remote machine's "
-                "Administrators group, that Remote UAC permits remote administrative actions, and include the machine "
-                "name when authenticating with a local account (e.g. HOST\\Administrator or .\\Administrator)."
+                "WMI повідомив про відмову у доступі. Переконайтеся, що надані облікові дані належать до групи "
+                "адміністраторів віддаленого комп'ютера, що Remote UAC дозволяє віддалені адміністративні дії, а також "
+                "вказуйте ім'я комп'ютера під час автентифікації локальним обліковим записом (наприклад, HOST\\Administrator або .\\Administrator)."
             )
 
         rpc_unavailable_tokens = ["the rpc server is unavailable", "0x800706ba"]
         if any(token in normalized for token in rpc_unavailable_tokens):
             hints.append(
-                "The RPC server could not be reached. Verify network connectivity, that the Windows Management Instrumentation "
-                "service is running, and that the firewall allows WMI/DCOM traffic."
+                "Не вдалося зв'язатися із сервером RPC. Перевірте мережеве з'єднання, "
+                "що служба Windows Management Instrumentation працює, та що брандмауер дозволяє трафік WMI/DCOM."
             )
 
         if hints:
@@ -290,17 +294,17 @@ class TimeSyncApp:
             f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); ",
             f"$cmd = {self._ps_single_quote(remote_command)}; ",
             f"$result = Invoke-WmiMethod -Class Win32_Process -ComputerName {host_q} -Credential $cred -Name Create -ArgumentList $cmd; ",
-            "if ($null -eq $result) { throw 'Invoke-WmiMethod returned no data.' } ",
-            "if ($result.ReturnValue -ne 0) { throw (\"Remote process failed with exit code {0}\" -f $result.ReturnValue) } ",
+            "if ($null -eq $result) { throw 'Invoke-WmiMethod не повернув дані.' } ",
+            "if ($result.ReturnValue -ne 0) { throw (\"Віддалений процес завершився з кодом {0}\" -f $result.ReturnValue) } ",
             "$remotePid = $result.ProcessId; ",
-            "if (-not $remotePid) { throw 'Remote process did not return an identifier.' } ",
+            "if (-not $remotePid) { throw 'Віддалений процес не повернув ідентифікатор.' } ",
         ]
         if wait_for_completion:
             max_attempts = 150
             sleep_ms = 200
             timeout_seconds = max_attempts * sleep_ms / 1000
             timeout_message = self._ps_single_quote(
-                f"Timed out waiting for remote process completion after {timeout_seconds:.1f} seconds."
+                f"Перевищено час очікування завершення віддаленого процесу після {timeout_seconds:.1f} с."
             )
             command_parts.extend(
                 [
@@ -318,11 +322,11 @@ class TimeSyncApp:
 
         command = "".join(command_parts)
 
-        self.log_message(f"Executing WMI command against {host} ...")
+        self.log_message(f"Виконання команди WMI для {host} ...")
         completed = self._run_local_powershell(command)
         if completed.returncode != 0:
-            stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
-            if "Timed out waiting for remote process completion" in stderr:
+            stderr = completed.stderr.strip() or "PowerShell повідомив про невідому помилку."
+            if "Перевищено час очікування завершення віддаленого процесу" in stderr:
                 raise RemoteProcessTimeoutError(stderr)
             raise RuntimeError(self._enhance_wmi_error(stderr))
 
@@ -337,14 +341,14 @@ class TimeSyncApp:
             f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
             f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
             f"$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName {host_q} -Credential $cred; "
-            "if ($null -eq $os) { throw 'Failed to query remote operating system via WMI.' } "
+            "if ($null -eq $os) { throw 'Не вдалося отримати дані про віддалену операційну систему через WMI.' } "
             "$os.LocalDateTime"
         )
 
-        self.log_message(f"Querying remote time via WMI on {host} ...")
+        self.log_message(f"Отримання віддаленого часу через WMI на {host} ...")
         completed = self._run_local_powershell(command)
         if completed.returncode != 0:
-            stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
+            stderr = completed.stderr.strip() or "PowerShell повідомив про невідому помилку."
             raise RuntimeError(self._enhance_wmi_error(stderr))
 
         stdout = completed.stdout.strip()
@@ -394,10 +398,10 @@ class TimeSyncApp:
         self._invoke_wmi_process(
             host, username, password, script, wait_for_completion=False
         )
-        self.log_message("Remote time change command dispatched; verification pending.")
+        self.log_message("Команду зміни віддаленого часу надіслано; очікується перевірка.")
         wait_seconds = WMI_VERIFICATION_DELAY_SECONDS
         self.log_message(
-            f"Waiting {wait_seconds} seconds before verifying the remote clock state..."
+            f"Очікування {wait_seconds} с перед перевіркою стану віддаленого годинника..."
         )
         time.sleep(wait_seconds)
         # Confirm the updated time via WMI
@@ -448,22 +452,20 @@ class TimeSyncApp:
             return
 
         if remote_dt is None:
-            message = "Received unexpected response when parsing remote time."
-            details = parsed or "<no output>"
-            self._show_error(f"{message}\nOutput:\n{details}")
+            message = "Отримано неочікувану відповідь під час розбору віддаленого часу."
+            details = parsed or "<немає виводу>"
+            self._show_error(f"{message}\nВивід:\n{details}")
             return
 
         local_dt = _dt.datetime.now(_dt.timezone.utc).astimezone()
         delta = remote_dt - local_dt
         diff_message = self._format_timedelta(delta)
 
-        log = [
-            f"Remote time: {remote_dt.isoformat()}",
-            f"Local time:  {local_dt.isoformat()}",
-            f"Difference:  {diff_message}",
-        ]
-        self.log_message("\n".join(log))
-        self._show_info("Remote time retrieved successfully.")
+        self.log_message(f"Віддалений час: {remote_dt.isoformat()}")
+        self.log_message(f"Локальний час:  {local_dt.isoformat()}")
+        diff_tag = "warning" if abs(delta.total_seconds()) > SYNC_TOLERANCE.total_seconds() else None
+        self.log_message(f"Різниця:       {diff_message}", tag=diff_tag)
+        self._show_info("Віддалений час успішно отримано.")
 
     def sync_remote_time(self) -> None:
         self._run_in_thread(self._sync_remote_time_impl)
@@ -491,29 +493,27 @@ class TimeSyncApp:
             return
 
         if remote_dt is None:
-            message = "Failed to confirm the updated remote time."
-            details = parsed or "<no output>"
-            self._show_error(f"{message}\nOutput:\n{details}")
+            message = "Не вдалося підтвердити оновлений віддалений час."
+            details = parsed or "<немає виводу>"
+            self._show_error(f"{message}\nВивід:\n{details}")
             return
 
         delta = remote_dt - _dt.datetime.now(_dt.timezone.utc).astimezone()
         diff_message = self._format_timedelta(delta)
-        log = [
-            f"Remote time after sync: {remote_dt.isoformat()}",
-            f"Local time during sync: {iso_time}",
-            f"Difference after sync:  {diff_message}",
-        ]
-        self.log_message("\n".join(log))
+        self.log_message(f"Віддалений час після синхронізації: {remote_dt.isoformat()}")
+        self.log_message(f"Локальний час під час синхронізації: {iso_time}")
+        diff_tag = "warning" if abs(delta.total_seconds()) > SYNC_TOLERANCE.total_seconds() else None
+        self.log_message(f"Різниця після синхронізації: {diff_message}", tag=diff_tag)
 
         if abs(delta.total_seconds()) > SYNC_TOLERANCE.total_seconds():
             tolerance_message = self._format_timedelta(SYNC_TOLERANCE)
             self._show_error(
-                "Remote clock difference after sync exceeds the allowable "
-                f"tolerance of {tolerance_message} (observed {diff_message})."
+                "Різниця годинника після синхронізації перевищує допустиме "
+                f"відхилення {tolerance_message} (зафіксовано {diff_message})."
             )
             return
 
-        self._show_info("Remote clock synchronized successfully.")
+        self._show_info("Віддалений годинник успішно синхронізовано.")
 
     # ------------------------------------------------------------------
     def run(self) -> None:
