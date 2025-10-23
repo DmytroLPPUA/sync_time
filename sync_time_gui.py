@@ -7,6 +7,7 @@ import datetime as _dt
 import hashlib
 import hmac
 import os
+import sys
 import re
 import subprocess
 import threading
@@ -302,8 +303,11 @@ class TimeSyncApp:
         return host, DEFAULT_USERNAME, passwords
 
     def _password_file_path(self) -> str:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(script_dir, PASSWORD_FILE_NAME)
+        if getattr(sys, "frozen", False):  # PyInstaller or similar bundle
+            base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_dir, PASSWORD_FILE_NAME)
 
     def _load_passwords(self, *, allow_missing: bool = False) -> List[str]:
         path = self._password_file_path()
