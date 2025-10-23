@@ -244,6 +244,32 @@ class TimeSyncApp:
             ["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, text=True
         )
 
+    @staticmethod
+    def _enhance_wmi_error(stderr: str) -> str:
+        message = stderr.strip() or "PowerShell reported an unknown error."
+        normalized = message.lower()
+        hints = []
+
+        access_denied_tokens = ["access is denied", "0x80070005"]
+        if any(token in normalized for token in access_denied_tokens):
+            hints.append(
+                "WMI reported an access denied error. Ensure the supplied credentials belong to the remote machine's "
+                "Administrators group, that Remote UAC permits remote administrative actions, and include the machine "
+                "name when authenticating with a local account (e.g. HOST\\Administrator or .\\Administrator)."
+            )
+
+        rpc_unavailable_tokens = ["the rpc server is unavailable", "0x800706ba"]
+        if any(token in normalized for token in rpc_unavailable_tokens):
+            hints.append(
+                "The RPC server could not be reached. Verify network connectivity, that the Windows Management Instrumentation "
+                "service is running, and that the firewall allows WMI/DCOM traffic."
+            )
+
+        if hints:
+            message = message + "\n\n" + " ".join(hints)
+
+        return message
+
     def _invoke_wmi_process(
         self,
         host: str,
@@ -259,6 +285,7 @@ class TimeSyncApp:
         user_q = self._ps_single_quote(username)
         pass_q = self._ps_single_quote(password)
         command_parts = [
+            "$ErrorActionPreference='Stop'; ",
             f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; ",
             f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); ",
             f"$cmd = {self._ps_single_quote(remote_command)}; ",
@@ -297,7 +324,7 @@ class TimeSyncApp:
             stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
             if "Timed out waiting for remote process completion" in stderr:
                 raise RemoteProcessTimeoutError(stderr)
-            raise RuntimeError(stderr)
+            raise RuntimeError(self._enhance_wmi_error(stderr))
 
     def _get_remote_time_via_wmi(
         self, host: str, username: str, password: str
@@ -306,6 +333,7 @@ class TimeSyncApp:
         user_q = self._ps_single_quote(username)
         pass_q = self._ps_single_quote(password)
         command = (
+            "$ErrorActionPreference='Stop'; "
             f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
             f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
             f"$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName {host_q} -Credential $cred; "
@@ -317,7 +345,7 @@ class TimeSyncApp:
         completed = self._run_local_powershell(command)
         if completed.returncode != 0:
             stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
-            raise RuntimeError(stderr)
+            raise RuntimeError(self._enhance_wmi_error(stderr))
 
         stdout = completed.stdout.strip()
         remote_dt, parsed = self._parse_wmi_datetime(stdout)
