@@ -26,3 +26,24 @@ The application logs every action in the lower text area. Errors are shown in th
 
 > **Note**
 > * Ensure that the remote firewall allows WMI/DCOM traffic and that the `Administrator` account is permitted for remote WMI calls.
+
+## Building a Windows executable
+
+To distribute the tool without requiring Python on the target machine, package it into a standalone executable with [PyInstaller](https://pyinstaller.org/):
+
+1. Open a PowerShell prompt in the project directory and (optionally) create and activate a virtual environment.
+2. Install PyInstaller:
+
+   ```powershell
+   py -3 -m pip install pyinstaller
+   ```
+
+3. Build the executable:
+
+   ```powershell
+   py -3 -m PyInstaller --noconsole --onefile --name sync_time sync_time_gui.py
+   ```
+
+   The binary will be created at `dist\sync_time.exe`. Copy `pass.enc` next to this file so the password manager can access the encrypted vault.
+
+4. Optionally copy any additional resources (e.g., README) into the distribution folder before handing it over to end users.
