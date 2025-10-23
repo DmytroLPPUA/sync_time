@@ -1,4 +1,4 @@
-"""GUI utility for synchronizing remote Windows time via PsExec or WMI."""
+"""GUI utility for synchronizing remote Windows time via WMI."""
 
 from __future__ import annotations
 
@@ -6,18 +6,20 @@ import base64
 import datetime as _dt
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple, TypeVar
 
 
 SYNC_TOLERANCE = _dt.timedelta(minutes=5)
 WMI_VERIFICATION_DELAY_SECONDS = 5
+DEFAULT_USERNAME = "Administrator"
+PASSWORD_FILE_NAME = "pass.txt"
+ResultT = TypeVar("ResultT")
 
 
 class RemoteProcessTimeoutError(RuntimeError):
@@ -32,12 +34,7 @@ class TimeSyncApp:
         self.root.title("Синхронізація часу")
         self.root.resizable(False, False)
 
-        self.psexec_var = tk.StringVar(value="PsExec.exe")
         self.host_var = tk.StringVar()
-        self.username_var = tk.StringVar()
-        self.password_var = tk.StringVar()
-        self.method_var = tk.StringVar(value="psexec")
-        self.settings_window: Optional[tk.Toplevel] = None
 
         self._build_ui()
 
@@ -50,11 +47,19 @@ class TimeSyncApp:
         ttk.Label(main_frame, text="Віддалений хост / IP:").grid(row=0, column=0, sticky="w", **padding)
         host_entry = ttk.Entry(main_frame, textvariable=self.host_var, width=45)
         host_entry.grid(row=0, column=1, sticky="ew", **padding)
-        settings_button = ttk.Button(main_frame, text="Параметри...", command=self._open_settings_dialog)
-        settings_button.grid(row=0, column=2, sticky="ew", **padding)
+
+        ttk.Label(
+            main_frame,
+            text=(
+                "Аутентифікація виконується обліковим записом Administrator. "
+                "Паролі зчитуються з pass.txt (кожний у новому рядку)."
+            ),
+            wraplength=460,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 5))
 
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
+        button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 0))
         button_frame.columnconfigure((0, 1), weight=1)
 
         self.check_button = ttk.Button(button_frame, text="Перевірити віддалений час", command=self.check_remote_time)
@@ -64,87 +69,15 @@ class TimeSyncApp:
         self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
-        self.output.grid(row=2, column=0, columnspan=3, padx=10, pady=(10, 10))
+        self.output.grid(row=3, column=0, columnspan=2, padx=10, pady=(10, 10))
         self.output.tag_configure("error", foreground="red")
         self.output.tag_configure("warning", foreground="red")
 
         # Accessibility: focus first field
         host_entry.focus_set()
 
-    def _open_settings_dialog(self) -> None:
-        if self.settings_window is not None and self.settings_window.winfo_exists():
-            self.settings_window.lift()
-            self.settings_window.focus_set()
-            return
-
-        window = tk.Toplevel(self.root)
-        window.title("Параметри підключення")
-        window.resizable(False, False)
-        window.transient(self.root)
-        self.settings_window = window
-
-        window.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
-
-        settings_frame = ttk.Frame(window, padding=10)
-        settings_frame.grid(row=0, column=0, sticky="nsew")
-        settings_frame.columnconfigure(1, weight=1)
-
-        padding = {"padx": 5, "pady": 5}
-
-        ttk.Label(settings_frame, text="Шлях до PsExec:").grid(row=0, column=0, sticky="w", **padding)
-        psexec_entry = ttk.Entry(settings_frame, textvariable=self.psexec_var, width=45)
-        psexec_entry.grid(row=0, column=1, sticky="ew", **padding)
-        browse_button = ttk.Button(settings_frame, text="Огляд", command=self._browse_psexec)
-        browse_button.grid(row=0, column=2, sticky="ew", **padding)
-
-        ttk.Label(settings_frame, text="Ім'я користувача:").grid(row=1, column=0, sticky="w", **padding)
-        username_entry = ttk.Entry(settings_frame, textvariable=self.username_var, width=45)
-        username_entry.grid(row=1, column=1, columnspan=2, sticky="ew", **padding)
-
-        ttk.Label(settings_frame, text="Пароль:").grid(row=2, column=0, sticky="w", **padding)
-        password_entry = ttk.Entry(settings_frame, textvariable=self.password_var, width=45, show="*")
-        password_entry.grid(row=2, column=1, columnspan=2, sticky="ew", **padding)
-
-        ttk.Label(settings_frame, text="Метод виконання:").grid(row=3, column=0, sticky="w", **padding)
-        method_frame = ttk.Frame(settings_frame)
-        method_frame.grid(row=3, column=1, columnspan=2, sticky="w", **padding)
-        ttk.Radiobutton(
-            method_frame,
-            text="PsExec",
-            variable=self.method_var,
-            value="psexec",
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Radiobutton(
-            method_frame,
-            text="WMI (Invoke-WmiMethod)",
-            variable=self.method_var,
-            value="wmi",
-        ).grid(row=0, column=1, sticky="w")
-
-        close_frame = ttk.Frame(settings_frame)
-        close_frame.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10, 0))
-        close_button = ttk.Button(close_frame, text="Закрити", command=self._close_settings_dialog)
-        close_button.grid(row=0, column=0, sticky="e")
-
-        psexec_entry.focus_set()
-        window.lift()
-
-    def _close_settings_dialog(self) -> None:
-        if self.settings_window is not None:
-            window = self.settings_window
-            self.settings_window = None
-            window.destroy()
-
     # ------------------------------------------------------------------
     # UI helpers
-    def _browse_psexec(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Виберіть PsExec.exe",
-            filetypes=[("PsExec", "PsExec.exe"), ("Виконуваний файл", "*.exe"), ("Усі файли", "*.*")],
-        )
-        if path:
-            self.psexec_var.set(path)
-
     def _append_output(self, message: str, *, tag: Optional[str] = None) -> None:
         self.output.configure(state="normal")
         text = message if message.endswith("\n") else f"{message}\n"
@@ -180,59 +113,63 @@ class TimeSyncApp:
 
     # ------------------------------------------------------------------
     # Validation & command helpers
-    def _resolve_psexec_path(self) -> str:
-        path = self.psexec_var.get().strip()
-        if not path:
-            path = "PsExec.exe"
-
-        if os.path.isfile(path):
-            return path
-
-        resolved = shutil.which(path)
-        if resolved:
-            return resolved
-
-        raise FileNotFoundError(
-            "Не вдалося знайти виконуваний файл PsExec. Вкажіть повний шлях або переконайтеся, що він доступний у PATH."
-        )
-
-    def _get_connection_details(self) -> Tuple[str, str, str]:
+    def _get_connection_details(self) -> Tuple[str, str, List[str]]:
         host = self.host_var.get().strip()
-        username = self.username_var.get().strip()
-        password = self.password_var.get()
-
         if not host:
             raise ValueError("Поле віддаленого хоста / IP не може бути порожнім.")
-        if not username:
-            raise ValueError("Ім'я користувача не може бути порожнім.")
-        if not password:
-            raise ValueError("Пароль не може бути порожнім.")
 
-        return host, username, password
+        passwords = self._load_passwords()
+        return host, DEFAULT_USERNAME, passwords
 
-    def _execute_psexec(self, host: str, username: str, password: str, command: str) -> subprocess.CompletedProcess:
-        psexec_path = self._resolve_psexec_path()
-        cmd = [
-            psexec_path,
-            f"\\\\{host}",
-            "-u",
-            username,
-            "-p",
-            password,
-            "-accepteula",
-            "-nobanner",
-            "powershell.exe",
-            "-NoProfile",
-            "-Command",
-            command,
+    def _password_file_path(self) -> str:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(script_dir, PASSWORD_FILE_NAME)
+
+    def _load_passwords(self) -> List[str]:
+        path = self._password_file_path()
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                "Не знайдено файл паролів pass.txt поруч із програмою."
+            )
+
+        with open(path, "r", encoding="utf-8") as handle:
+            passwords = [line.strip() for line in handle if line.strip()]
+
+        if not passwords:
+            raise ValueError("Файл pass.txt не містить жодного пароля.")
+
+        return passwords
+
+    @staticmethod
+    def _is_authentication_error(message: str) -> bool:
+        normalized = message.lower()
+        tokens = [
+            "access is denied",
+            "логон відхилено",
+            "logon failure",
+            "authentication failure",
+            "недійсні облікові дані",
+            "bad username or password",
         ]
+        return any(token in normalized for token in tokens)
 
-        self.log_message(f"Виконання команди PsExec для {host} ...")
-        completed = subprocess.run(cmd, capture_output=True, text=True)
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or "PsExec повідомив про невідому помилку."
-            raise RuntimeError(stderr)
-        return completed
+    def _attempt_with_passwords(self, passwords: List[str], action: Callable[[str], ResultT]) -> ResultT:
+        last_auth_error: Optional[Exception] = None
+        for index, password in enumerate(passwords, start=1):
+            self.log_message(
+                f"Спроба використати пароль {index} з {len(passwords)}."
+            )
+            try:
+                return action(password)
+            except RuntimeError as exc:
+                if self._is_authentication_error(str(exc)):
+                    self.log_message("Пароль не підійшов, пробуємо наступний...", tag="warning")
+                    last_auth_error = exc
+                    continue
+                raise
+        if last_auth_error is not None:
+            raise last_auth_error
+        raise RuntimeError("Не знайдено жодного дійсного пароля у pass.txt.")
 
     @staticmethod
     def _ps_single_quote(value: str) -> str:
@@ -438,15 +375,12 @@ class TimeSyncApp:
 
     def _check_remote_time_impl(self) -> None:
         try:
-            host, username, password = self._get_connection_details()
-            method = self.method_var.get()
-            if method == "psexec":
-                command = "Get-Date -Format o"
-                completed = self._execute_psexec(host, username, password, command)
-                stdout = completed.stdout.strip()
-                remote_dt, parsed = self._parse_remote_time(stdout)
-            else:
-                remote_dt, parsed = self._get_remote_time_via_wmi(host, username, password)
+            host, username, passwords = self._get_connection_details()
+
+            def action(password: str) -> Tuple[Optional[_dt.datetime], Optional[str]]:
+                return self._get_remote_time_via_wmi(host, username, password)
+
+            remote_dt, parsed = self._attempt_with_passwords(passwords, action)
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(str(exc))
             return
@@ -472,22 +406,14 @@ class TimeSyncApp:
 
     def _sync_remote_time_impl(self) -> None:
         try:
-            host, username, password = self._get_connection_details()
+            host, username, passwords = self._get_connection_details()
             local_dt = _dt.datetime.now(_dt.timezone.utc).astimezone()
             iso_time = local_dt.isoformat()
-            method = self.method_var.get()
-            if method == "psexec":
-                command = (
-                    "$ErrorActionPreference='Stop'; "
-                    f"$target = Get-Date '{iso_time}'; "
-                    "Set-Date -Date $target | Out-Null; "
-                    "Get-Date -Format o"
-                )
-                completed = self._execute_psexec(host, username, password, command)
-                stdout = completed.stdout.strip()
-                remote_dt, parsed = self._parse_remote_time(stdout)
-            else:
-                remote_dt, parsed = self._sync_remote_time_via_wmi(host, username, password, iso_time)
+
+            def action(password: str) -> Tuple[Optional[_dt.datetime], Optional[str]]:
+                return self._sync_remote_time_via_wmi(host, username, password, iso_time)
+
+            remote_dt, parsed = self._attempt_with_passwords(passwords, action)
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(str(exc))
             return

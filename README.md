@@ -1,38 +1,28 @@
 # sync_time
 
-Tkinter-based helper application for synchronising the clock of a remote Windows PC with the local machine via [PsExec](https://learn.microsoft.com/sysinternals/downloads/psexec).
+Tkinter-based helper application for synchronising the clock of a remote Windows PC with the local machine via Windows Management Instrumentation (WMI).
 
 ## Requirements
 
 * Windows host where the utility will run.
 * Python 3.9 or newer (ships with Tkinter).
-* `PsExec.exe` from the Microsoft Sysinternals suite (copy it next to the script or make sure it is available through the `PATH`).
-* Administrative credentials for the remote Windows machine.
+* Network access to the target Windows machine with WMI enabled for the built-in `Administrator` account.
+* A `pass.txt` file located next to `sync_time_gui.py` that contains one possible Administrator password per line.
 
 ## Usage
 
-1. Download `PsExec.exe` from Microsoft Sysinternals and place it next to `sync_time_gui.py` (or add the directory to the `PATH`).
+1. Create `pass.txt` in the same folder as `sync_time_gui.py` and list every possible password for the remote `Administrator` account (each on its own line). The application will try them sequentially until the connection succeeds.
 2. Run the script:
 
    ```powershell
    python sync_time_gui.py
    ```
 
-3. Configure the connection details as described in the [Settings](#settings) section below.
-
-4. Click **Check remote time** to display the remote clock, the local clock, and the time difference.
-5. Click **Sync now** to set the remote clock to the local time. The tool automatically confirms the new time afterwards.
-
-## Settings
-
-The GUI stores the parameters needed for PsExec in a small form:
-
-* **PsExec path** – Provide the path to `PsExec.exe` (pre-filled with `PsExec.exe` for convenience).
-* **Remote computer** – Enter the remote computer name or IP address.
-* **Credentials** – Enter the administrator username and password for the remote computer.
+3. Enter the remote computer name or IP address in the main window.
+4. Click **Перевірити віддалений час** to display the remote clock, the local clock, and the time difference.
+5. Click **Синхронізувати** to set the remote clock to the local time. The tool automatically confirms the new time afterwards.
 
 The application logs every action in the lower text area. Errors are shown in the log and via pop-up dialogs.
 
 > **Note**
-> * The utility invokes PsExec with the `-accepteula` flag. The first execution may still prompt for elevation depending on local policies.
-> * PsExec transmits credentials over the network. Ensure you trust the network path before using it.
+> * Ensure that the remote firewall allows WMI/DCOM traffic and that the `Administrator` account is permitted for remote WMI calls.
