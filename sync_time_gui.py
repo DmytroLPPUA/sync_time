@@ -1,9 +1,11 @@
-"""GUI utility for synchronizing remote Windows time via PsExec."""
+"""GUI utility for synchronizing remote Windows time via PsExec or WMI."""
 
 from __future__ import annotations
 
+import base64
 import datetime as _dt
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -25,6 +27,7 @@ class TimeSyncApp:
         self.host_var = tk.StringVar()
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
+        self.method_var = tk.StringVar(value="psexec")
 
         self._build_ui()
 
@@ -51,8 +54,24 @@ class TimeSyncApp:
         password_entry = ttk.Entry(main_frame, textvariable=self.password_var, width=45, show="*")
         password_entry.grid(row=3, column=1, columnspan=2, sticky="ew", **padding)
 
+        ttk.Label(main_frame, text="Execution method:").grid(row=4, column=0, sticky="w", **padding)
+        method_frame = ttk.Frame(main_frame)
+        method_frame.grid(row=4, column=1, columnspan=2, sticky="w", **padding)
+        ttk.Radiobutton(
+            method_frame,
+            text="PsExec",
+            variable=self.method_var,
+            value="psexec",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Radiobutton(
+            method_frame,
+            text="WMI (Invoke-WmiMethod)",
+            variable=self.method_var,
+            value="wmi",
+        ).grid(row=0, column=1, sticky="w")
+
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=4, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
+        button_frame.grid(row=5, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
         button_frame.columnconfigure((0, 1), weight=1)
 
         self.check_button = ttk.Button(button_frame, text="Check remote time", command=self.check_remote_time)
@@ -62,7 +81,7 @@ class TimeSyncApp:
         self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
 
         self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
-        self.output.grid(row=5, column=0, columnspan=3, padx=10, pady=(10, 10))
+        self.output.grid(row=6, column=0, columnspan=3, padx=10, pady=(10, 10))
 
         # Accessibility: focus first field
         host_entry.focus_set()
@@ -165,6 +184,119 @@ class TimeSyncApp:
         return completed
 
     @staticmethod
+    def _ps_single_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    @staticmethod
+    def _encode_powershell_script(script: str) -> str:
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        return encoded
+
+    def _run_local_powershell(self, script: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, text=True
+        )
+
+    def _invoke_wmi_process(self, host: str, username: str, password: str, script: str) -> None:
+        encoded = self._encode_powershell_script(script)
+        remote_command = f"powershell.exe -NoProfile -EncodedCommand {encoded}"
+        host_q = self._ps_single_quote(host)
+        user_q = self._ps_single_quote(username)
+        pass_q = self._ps_single_quote(password)
+        command = (
+            f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
+            f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
+            f"$cmd = {self._ps_single_quote(remote_command)}; "
+            f"$result = Invoke-WmiMethod -Class Win32_Process -ComputerName {host_q} -Credential $cred -Name Create -ArgumentList $cmd; "
+            "if ($null -eq $result) { throw 'Invoke-WmiMethod returned no data.' } "
+            "if ($result.ReturnValue -ne 0) { throw (\"Remote process failed with exit code {0}\" -f $result.ReturnValue) } "
+            "$pid = $result.ProcessId; "
+            "if (-not $pid) { throw 'Remote process did not return an identifier.' } "
+            "$attempts = 0; "
+            "while ($attempts -lt 50) { "
+            f"    $proc = Get-WmiObject -Class Win32_Process -ComputerName {host_q} -Credential $cred -Filter (\"ProcessId = {0}\" -f $pid); "
+            "    if (-not $proc) { break } ; "
+            "    Start-Sleep -Milliseconds 200; "
+            "    $attempts++; "
+            "}; "
+            "if ($attempts -eq 50) { throw 'Timed out waiting for remote process completion.' }"
+        )
+
+        self.log_message(f"Executing WMI command against {host} ...")
+        completed = self._run_local_powershell(command)
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
+            raise RuntimeError(stderr)
+
+    def _get_remote_time_via_wmi(
+        self, host: str, username: str, password: str
+    ) -> Tuple[Optional[_dt.datetime], Optional[str]]:
+        host_q = self._ps_single_quote(host)
+        user_q = self._ps_single_quote(username)
+        pass_q = self._ps_single_quote(password)
+        command = (
+            f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
+            f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
+            f"$os = Get-WmiObject -Class Win32_OperatingSystem -ComputerName {host_q} -Credential $cred; "
+            "if ($null -eq $os) { throw 'Failed to query remote operating system via WMI.' } "
+            "$os.LocalDateTime"
+        )
+
+        self.log_message(f"Querying remote time via WMI on {host} ...")
+        completed = self._run_local_powershell(command)
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or "PowerShell reported an unknown error."
+            raise RuntimeError(stderr)
+
+        stdout = completed.stdout.strip()
+        remote_dt, parsed = self._parse_wmi_datetime(stdout)
+        return remote_dt, parsed or stdout or None
+
+    @staticmethod
+    def _parse_wmi_datetime(value: str) -> Tuple[Optional[_dt.datetime], Optional[str]]:
+        if not value:
+            return None, None
+
+        first_line = value.splitlines()[0].strip()
+        match = re.fullmatch(r"(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d{6})([+-])(\d{3}|\*\*\*)", first_line)
+        if not match:
+            return None, first_line
+
+        year, month, day, hour, minute, second, micros, sign, offset = match.groups()
+        dt = _dt.datetime(
+            int(year),
+            int(month),
+            int(day),
+            int(hour),
+            int(minute),
+            int(second),
+            int(micros),
+        )
+
+        if offset == "***":
+            tzinfo = _dt.datetime.now(_dt.timezone.utc).astimezone().tzinfo
+        else:
+            minutes = int(offset)
+            delta = _dt.timedelta(minutes=minutes)
+            if sign == "-":
+                delta = -delta
+            tzinfo = _dt.timezone(delta)
+
+        return dt.replace(tzinfo=tzinfo), first_line
+
+    def _sync_remote_time_via_wmi(
+        self, host: str, username: str, password: str, iso_time: str
+    ) -> Tuple[Optional[_dt.datetime], Optional[str]]:
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            f"$target = Get-Date '{iso_time}'; "
+            "Set-Date -Date $target | Out-Null"
+        )
+        self._invoke_wmi_process(host, username, password, script)
+        # Confirm the updated time via WMI
+        return self._get_remote_time_via_wmi(host, username, password)
+
+    @staticmethod
     def _parse_remote_time(output: str) -> Tuple[Optional[_dt.datetime], Optional[str]]:
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         for line in reversed(lines):
@@ -195,18 +327,21 @@ class TimeSyncApp:
     def _check_remote_time_impl(self) -> None:
         try:
             host, username, password = self._get_connection_details()
-            command = "Get-Date -Format o"
-            completed = self._execute_psexec(host, username, password, command)
+            method = self.method_var.get()
+            if method == "psexec":
+                command = "Get-Date -Format o"
+                completed = self._execute_psexec(host, username, password, command)
+                stdout = completed.stdout.strip()
+                remote_dt, parsed = self._parse_remote_time(stdout)
+            else:
+                remote_dt, parsed = self._get_remote_time_via_wmi(host, username, password)
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(str(exc))
             return
 
-        stdout = completed.stdout.strip()
-        remote_dt, parsed = self._parse_remote_time(stdout)
-
         if remote_dt is None:
             message = "Received unexpected response when parsing remote time."
-            details = parsed or stdout or "<no output>"
+            details = parsed or "<no output>"
             self._show_error(f"{message}\nOutput:\n{details}")
             return
 
@@ -230,22 +365,26 @@ class TimeSyncApp:
             host, username, password = self._get_connection_details()
             local_dt = _dt.datetime.now(_dt.timezone.utc).astimezone()
             iso_time = local_dt.isoformat()
-            command = (
-                "$ErrorActionPreference='Stop'; "
-                f"$target = Get-Date '{iso_time}'; "
-                "Set-Date -Date $target | Out-Null; "
-                "Get-Date -Format o"
-            )
-            completed = self._execute_psexec(host, username, password, command)
+            method = self.method_var.get()
+            if method == "psexec":
+                command = (
+                    "$ErrorActionPreference='Stop'; "
+                    f"$target = Get-Date '{iso_time}'; "
+                    "Set-Date -Date $target | Out-Null; "
+                    "Get-Date -Format o"
+                )
+                completed = self._execute_psexec(host, username, password, command)
+                stdout = completed.stdout.strip()
+                remote_dt, parsed = self._parse_remote_time(stdout)
+            else:
+                remote_dt, parsed = self._sync_remote_time_via_wmi(host, username, password, iso_time)
         except Exception as exc:  # pylint: disable=broad-except
             self._show_error(str(exc))
             return
 
-        stdout = completed.stdout.strip()
-        remote_dt, parsed = self._parse_remote_time(stdout)
         if remote_dt is None:
             message = "Failed to confirm the updated remote time."
-            details = parsed or stdout or "<no output>"
+            details = parsed or "<no output>"
             self._show_error(f"{message}\nOutput:\n{details}")
             return
 
