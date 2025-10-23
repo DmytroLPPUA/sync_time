@@ -2,6 +2,14 @@
 
 Tkinter-based helper application for synchronising the clock of a remote Windows PC with the local machine via Windows Management Instrumentation (WMI).
 
+## Коротка інструкція
+
+1. Запустіть застосунок командою `python sync_time_gui.py` на робочому комп’ютері.
+2. У головному вікні введіть ім’я або IP-адресу віддаленого Windows-хоста.
+3. За потреби відкрийте **Керування паролями**, щоб додати можливі паролі для облікового запису `Administrator`.
+4. Натисніть **Перевірити віддалений час**, щоб побачити обидві дати й різницю між ними.
+5. Коли потрібно, натисніть **Синхронізувати**, і програма виставить віддалений час та підтвердить результат у журналі внизу вікна.
+
 ## Requirements
 
 * Windows host where the utility will run.
