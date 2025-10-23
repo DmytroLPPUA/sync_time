@@ -244,37 +244,52 @@ class TimeSyncApp:
             ["powershell.exe", "-NoProfile", "-Command", script], capture_output=True, text=True
         )
 
-    def _invoke_wmi_process(self, host: str, username: str, password: str, script: str) -> None:
+    def _invoke_wmi_process(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        script: str,
+        *,
+        wait_for_completion: bool = True,
+    ) -> None:
         encoded = self._encode_powershell_script(script)
         remote_command = f"powershell.exe -NoProfile -EncodedCommand {encoded}"
         host_q = self._ps_single_quote(host)
         user_q = self._ps_single_quote(username)
         pass_q = self._ps_single_quote(password)
-        max_attempts = 150
-        sleep_ms = 200
-        timeout_seconds = max_attempts * sleep_ms / 1000
-        timeout_message = self._ps_single_quote(
-            f"Timed out waiting for remote process completion after {timeout_seconds:.1f} seconds."
-        )
-        command = (
-            f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
-            f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
-            f"$cmd = {self._ps_single_quote(remote_command)}; "
-            f"$result = Invoke-WmiMethod -Class Win32_Process -ComputerName {host_q} -Credential $cred -Name Create -ArgumentList $cmd; "
-            "if ($null -eq $result) { throw 'Invoke-WmiMethod returned no data.' } "
-            "if ($result.ReturnValue -ne 0) { throw (\"Remote process failed with exit code {0}\" -f $result.ReturnValue) } "
-            "$remotePid = $result.ProcessId; "
-            "if (-not $remotePid) { throw 'Remote process did not return an identifier.' } "
-            f"$maxAttempts = {max_attempts}; "
-            "$attempts = 0; "
-            "while ($attempts -lt $maxAttempts) { "
-            f"    $proc = Get-WmiObject -Class Win32_Process -ComputerName {host_q} -Credential $cred -Filter (\"ProcessId = {0}\" -f $remotePid); "
-            "    if (-not $proc) { break } ; "
-            f"    Start-Sleep -Milliseconds {sleep_ms}; "
-            "    $attempts++; "
-            "}; "
-            f"if ($attempts -eq $maxAttempts) {{ throw {timeout_message} }}"
-        )
+        command_parts = [
+            f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; ",
+            f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); ",
+            f"$cmd = {self._ps_single_quote(remote_command)}; ",
+            f"$result = Invoke-WmiMethod -Class Win32_Process -ComputerName {host_q} -Credential $cred -Name Create -ArgumentList $cmd; ",
+            "if ($null -eq $result) { throw 'Invoke-WmiMethod returned no data.' } ",
+            "if ($result.ReturnValue -ne 0) { throw (\"Remote process failed with exit code {0}\" -f $result.ReturnValue) } ",
+            "$remotePid = $result.ProcessId; ",
+            "if (-not $remotePid) { throw 'Remote process did not return an identifier.' } ",
+        ]
+        if wait_for_completion:
+            max_attempts = 150
+            sleep_ms = 200
+            timeout_seconds = max_attempts * sleep_ms / 1000
+            timeout_message = self._ps_single_quote(
+                f"Timed out waiting for remote process completion after {timeout_seconds:.1f} seconds."
+            )
+            command_parts.extend(
+                [
+                    f"$maxAttempts = {max_attempts}; ",
+                    "$attempts = 0; ",
+                    "while ($attempts -lt $maxAttempts) { ",
+                    f"    $proc = Get-WmiObject -Class Win32_Process -ComputerName {host_q} -Credential $cred -Filter (\"ProcessId = {0}\" -f $remotePid); ",
+                    "    if (-not $proc) { break } ; ",
+                    f"    Start-Sleep -Milliseconds {sleep_ms}; ",
+                    "    $attempts++; ",
+                    "}; ",
+                    f"if ($attempts -eq $maxAttempts) {{ throw {timeout_message} }}",
+                ]
+            )
+
+        command = "".join(command_parts)
 
         self.log_message(f"Executing WMI command against {host} ...")
         completed = self._run_local_powershell(command)
@@ -348,12 +363,10 @@ class TimeSyncApp:
             f"$target = Get-Date '{iso_time}'; "
             "Set-Date -Date $target | Out-Null"
         )
-        timeout_exc: Optional[RemoteProcessTimeoutError] = None
-        try:
-            self._invoke_wmi_process(host, username, password, script)
-        except RemoteProcessTimeoutError as exc:
-            timeout_exc = exc
-            self.log_message(f"WARNING: {exc}")
+        self._invoke_wmi_process(
+            host, username, password, script, wait_for_completion=False
+        )
+        self.log_message("Remote time change command dispatched; verification pending.")
         wait_seconds = WMI_VERIFICATION_DELAY_SECONDS
         self.log_message(
             f"Waiting {wait_seconds} seconds before verifying the remote clock state..."
@@ -361,8 +374,6 @@ class TimeSyncApp:
         time.sleep(wait_seconds)
         # Confirm the updated time via WMI
         remote_dt, parsed = self._get_remote_time_via_wmi(host, username, password)
-        if remote_dt is None and timeout_exc is not None:
-            raise timeout_exc
         return remote_dt, parsed
 
     @staticmethod
