@@ -28,6 +28,7 @@ class TimeSyncApp:
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
         self.method_var = tk.StringVar(value="psexec")
+        self.settings_window: Optional[tk.Toplevel] = None
 
         self._build_ui()
 
@@ -35,28 +36,67 @@ class TimeSyncApp:
         padding = {"padx": 10, "pady": 5}
         main_frame = ttk.Frame(self.root)
         main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(main_frame, text="PsExec path:").grid(row=0, column=0, sticky="w", **padding)
-        psexec_entry = ttk.Entry(main_frame, textvariable=self.psexec_var, width=45)
+        ttk.Label(main_frame, text="Remote host/IP:").grid(row=0, column=0, sticky="w", **padding)
+        host_entry = ttk.Entry(main_frame, textvariable=self.host_var, width=45)
+        host_entry.grid(row=0, column=1, sticky="ew", **padding)
+        settings_button = ttk.Button(main_frame, text="Settings...", command=self._open_settings_dialog)
+        settings_button.grid(row=0, column=2, sticky="ew", **padding)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
+        button_frame.columnconfigure((0, 1), weight=1)
+
+        self.check_button = ttk.Button(button_frame, text="Check remote time", command=self.check_remote_time)
+        self.check_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+
+        self.sync_button = ttk.Button(button_frame, text="Sync now", command=self.sync_remote_time)
+        self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
+        self.output.grid(row=2, column=0, columnspan=3, padx=10, pady=(10, 10))
+
+        # Accessibility: focus first field
+        host_entry.focus_set()
+
+    def _open_settings_dialog(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_set()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Connection Settings")
+        window.resizable(False, False)
+        window.transient(self.root)
+        self.settings_window = window
+
+        window.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
+
+        settings_frame = ttk.Frame(window, padding=10)
+        settings_frame.grid(row=0, column=0, sticky="nsew")
+        settings_frame.columnconfigure(1, weight=1)
+
+        padding = {"padx": 5, "pady": 5}
+
+        ttk.Label(settings_frame, text="PsExec path:").grid(row=0, column=0, sticky="w", **padding)
+        psexec_entry = ttk.Entry(settings_frame, textvariable=self.psexec_var, width=45)
         psexec_entry.grid(row=0, column=1, sticky="ew", **padding)
-        browse_button = ttk.Button(main_frame, text="Browse", command=self._browse_psexec)
+        browse_button = ttk.Button(settings_frame, text="Browse", command=self._browse_psexec)
         browse_button.grid(row=0, column=2, sticky="ew", **padding)
 
-        ttk.Label(main_frame, text="Remote host/IP:").grid(row=1, column=0, sticky="w", **padding)
-        host_entry = ttk.Entry(main_frame, textvariable=self.host_var, width=45)
-        host_entry.grid(row=1, column=1, columnspan=2, sticky="ew", **padding)
+        ttk.Label(settings_frame, text="Username:").grid(row=1, column=0, sticky="w", **padding)
+        username_entry = ttk.Entry(settings_frame, textvariable=self.username_var, width=45)
+        username_entry.grid(row=1, column=1, columnspan=2, sticky="ew", **padding)
 
-        ttk.Label(main_frame, text="Username:").grid(row=2, column=0, sticky="w", **padding)
-        username_entry = ttk.Entry(main_frame, textvariable=self.username_var, width=45)
-        username_entry.grid(row=2, column=1, columnspan=2, sticky="ew", **padding)
+        ttk.Label(settings_frame, text="Password:").grid(row=2, column=0, sticky="w", **padding)
+        password_entry = ttk.Entry(settings_frame, textvariable=self.password_var, width=45, show="*")
+        password_entry.grid(row=2, column=1, columnspan=2, sticky="ew", **padding)
 
-        ttk.Label(main_frame, text="Password:").grid(row=3, column=0, sticky="w", **padding)
-        password_entry = ttk.Entry(main_frame, textvariable=self.password_var, width=45, show="*")
-        password_entry.grid(row=3, column=1, columnspan=2, sticky="ew", **padding)
-
-        ttk.Label(main_frame, text="Execution method:").grid(row=4, column=0, sticky="w", **padding)
-        method_frame = ttk.Frame(main_frame)
-        method_frame.grid(row=4, column=1, columnspan=2, sticky="w", **padding)
+        ttk.Label(settings_frame, text="Execution method:").grid(row=3, column=0, sticky="w", **padding)
+        method_frame = ttk.Frame(settings_frame)
+        method_frame.grid(row=3, column=1, columnspan=2, sticky="w", **padding)
         ttk.Radiobutton(
             method_frame,
             text="PsExec",
@@ -70,21 +110,19 @@ class TimeSyncApp:
             value="wmi",
         ).grid(row=0, column=1, sticky="w")
 
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=5, column=0, columnspan=3, sticky="ew", padx=10, pady=(5, 0))
-        button_frame.columnconfigure((0, 1), weight=1)
+        close_frame = ttk.Frame(settings_frame)
+        close_frame.grid(row=4, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        close_button = ttk.Button(close_frame, text="Close", command=self._close_settings_dialog)
+        close_button.grid(row=0, column=0, sticky="e")
 
-        self.check_button = ttk.Button(button_frame, text="Check remote time", command=self.check_remote_time)
-        self.check_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        psexec_entry.focus_set()
+        window.lift()
 
-        self.sync_button = ttk.Button(button_frame, text="Sync now", command=self.sync_remote_time)
-        self.sync_button.grid(row=0, column=1, sticky="ew", padx=(5, 0))
-
-        self.output = ScrolledText(main_frame, width=70, height=15, state="disabled")
-        self.output.grid(row=6, column=0, columnspan=3, padx=10, pady=(10, 10))
-
-        # Accessibility: focus first field
-        host_entry.focus_set()
+    def _close_settings_dialog(self) -> None:
+        if self.settings_window is not None:
+            window = self.settings_window
+            self.settings_window = None
+            window.destroy()
 
     # ------------------------------------------------------------------
     # UI helpers
@@ -203,6 +241,12 @@ class TimeSyncApp:
         host_q = self._ps_single_quote(host)
         user_q = self._ps_single_quote(username)
         pass_q = self._ps_single_quote(password)
+        max_attempts = 150
+        sleep_ms = 200
+        timeout_seconds = max_attempts * sleep_ms / 1000
+        timeout_message = self._ps_single_quote(
+            f"Timed out waiting for remote process completion after {timeout_seconds:.1f} seconds."
+        )
         command = (
             f"$sec = ConvertTo-SecureString {pass_q} -AsPlainText -Force; "
             f"$cred = New-Object System.Management.Automation.PSCredential({user_q}, $sec); "
@@ -212,14 +256,15 @@ class TimeSyncApp:
             "if ($result.ReturnValue -ne 0) { throw (\"Remote process failed with exit code {0}\" -f $result.ReturnValue) } "
             "$remotePid = $result.ProcessId; "
             "if (-not $remotePid) { throw 'Remote process did not return an identifier.' } "
+            f"$maxAttempts = {max_attempts}; "
             "$attempts = 0; "
-            "while ($attempts -lt 50) { "
+            "while ($attempts -lt $maxAttempts) { "
             f"    $proc = Get-WmiObject -Class Win32_Process -ComputerName {host_q} -Credential $cred -Filter (\"ProcessId = {0}\" -f $remotePid); "
             "    if (-not $proc) { break } ; "
-            "    Start-Sleep -Milliseconds 200; "
+            f"    Start-Sleep -Milliseconds {sleep_ms}; "
             "    $attempts++; "
             "}; "
-            "if ($attempts -eq 50) { throw 'Timed out waiting for remote process completion.' }"
+            f"if ($attempts -eq $maxAttempts) {{ throw {timeout_message} }}"
         )
 
         self.log_message(f"Executing WMI command against {host} ...")
